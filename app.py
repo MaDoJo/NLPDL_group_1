@@ -19,11 +19,11 @@ def safe_parse(val):
 
 def convert_to_list(data):
     """Safely convert Pandas/Numpy types to standard Python lists."""
-    if hasattr(data, 'tolist'): # Converts Numpy arrays
+    if hasattr(data, 'tolist'): 
         return data.tolist()
-    if isinstance(data, float) and pd.isna(data): # Handles empty Pandas cells (NaN)
+    if isinstance(data, float) and pd.isna(data): 
         return []
-    if isinstance(data, str): # Safety catch for stringified lists
+    if isinstance(data, str): 
         try:
             return ast.literal_eval(data)
         except:
@@ -41,13 +41,14 @@ init_session_state()
 
 # --- 3. Sidebar: Data Loading & Export ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    
-    # Check for secrets first, fallback to user input
-    default_token = st.secrets.get("HF_TOKEN", "") if hasattr(st.secrets, "get") else ""
-    hf_token = st.text_input("Hugging Face Write Token", type="password", value=default_token, help="Required to save data back to Hugging Face.")
-    
-    st.divider()
+    # --- SILENT AUTHENTICATION ---
+    # Securely load the token from the backend Space Secrets
+    hf_token = ""
+    try:
+        hf_token = st.secrets.get("HF_TOKEN", "")
+    except Exception:
+        pass # Ignore if no secrets file exists (e.g., local testing)
+
     st.header("📥 Load Data")
     
     data_source = st.radio("Select Data Source:", ("Base NVIDIA Dataset", "My Custom HF Dataset", "CSV Upload"))
@@ -66,7 +67,7 @@ with st.sidebar:
             if target_load_repo:
                 try:
                     with st.spinner(f"Loading {target_load_repo}..."):
-                        # If the dataset is private, it needs the token to load
+                        # Uses the silent token if the dataset is private
                         ds = load_dataset(target_load_repo, split='train', token=hf_token if hf_token else None)
                         st.session_state.df = ds.to_pandas()
                         st.session_state.current_index = 0
@@ -100,7 +101,7 @@ with st.sidebar:
         
         if st.button("Push to Hugging Face", type="primary"):
             if not hf_token:
-                st.error("Missing Hugging Face Token! Please add it at the top of the sidebar.")
+                st.error("Missing Hugging Face Token! Please configure HF_TOKEN in your Space Secrets settings.")
             elif not target_save_repo:
                 st.error("Please specify a Target HF Repo ID.")
             else:
@@ -185,7 +186,6 @@ with col_right:
     # Clean the distractors array
     existing_distractors = convert_to_list(record.get('distractors', []))
     
-    # Use len() instead of implicit truthiness to avoid NumPy ambiguity
     if len(existing_distractors) > 0:
         distractors_json = json.dumps(existing_distractors, indent=2)
     else:
@@ -198,7 +198,7 @@ with col_right:
             updated_data = json.loads(edited_distractors_str)
             st.session_state.df.at[idx, 'distractors'] = updated_data
             st.success("Annotations updated! (Don't forget to Push to Hub to save permanently)")
-            st.rerun() # Refresh to show applied changes
+            st.rerun() 
         except json.JSONDecodeError:
             st.error("Invalid JSON format. Please check your syntax.")
 
@@ -220,12 +220,11 @@ with col_right:
                 "content": new_distractor_text
             }
             
-            # Use our cleaned list from above
             current_list = existing_distractors.copy()
             current_list.append(new_entry)
             
             st.session_state.df.at[idx, 'distractors'] = current_list
             st.success("New distractor added! (Don't forget to Push to Hub to save permanently)")
-            st.rerun() # Refresh to show the new data in the editor above
+            st.rerun() 
         else:
             st.error("Please enter distractor text.")
