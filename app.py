@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import json
 import ast
-from datasets import load_dataset, Dataset
+import io
+from datasets import load_dataset
+from huggingface_hub import HfApi, hf_hub_download
 
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="Distractor Annotation Tool", layout="wide")
@@ -40,42 +42,53 @@ def init_session_state():
 init_session_state()
 
 # --- 3. Sidebar: Data Loading & Export ---
+# Hardcoded Space Repo
+TARGET_REPO = "Lunchtime94/NLPDL_group1"
+
 with st.sidebar:
-    # --- SILENT AUTHENTICATION ---
     # Securely load the token from the backend Space Secrets
     hf_token = ""
     try:
         hf_token = st.secrets.get("HF_TOKEN", "")
     except Exception:
-        pass # Ignore if no secrets file exists (e.g., local testing)
+        pass 
 
     st.header("📥 Load Data")
+    data_source = st.radio("Select Data Source:", ("Space Storage", "Base NVIDIA Dataset", "CSV Upload"))
     
-    data_source = st.radio("Select Data Source:", ("Base NVIDIA Dataset", "My Custom HF Dataset", "CSV Upload"))
-    
-    if data_source == "Base NVIDIA Dataset":
+    if data_source == "Space Storage":
+        st.markdown(f"**Repo:** `{TARGET_REPO}`")
+        load_filename = st.text_input("Filename to load", value="annotated_distractors.csv")
+        
+        if st.button("Load from Space"):
+            if load_filename:
+                try:
+                    with st.spinner(f"Downloading {load_filename}..."):
+                        file_path = hf_hub_download(
+                            repo_id=TARGET_REPO,
+                            filename=load_filename,
+                            repo_type="space",
+                            token=hf_token if hf_token else None
+                        )
+                        df = pd.read_csv(file_path)
+                        for col in ['conversation', 'distractors', 'conversation_with_distractors']:
+                            if col in df.columns:
+                                df[col] = df[col].apply(safe_parse)
+                        st.session_state.df = df
+                        st.session_state.current_index = 0
+                        st.success(f"Loaded {load_filename} successfully!")
+                except Exception as e:
+                    st.error(f"Failed to load. Ensure the file exists. Error: {e}")
+            else:
+                st.warning("Please enter a filename.")
+                
+    elif data_source == "Base NVIDIA Dataset":
         if st.button("Load Base Dataset"):
             with st.spinner("Loading nvidia/CantTalkAboutThis-Topic-Control-Dataset..."):
                 ds = load_dataset("nvidia/CantTalkAboutThis-Topic-Control-Dataset", split='train')
                 st.session_state.df = ds.to_pandas()
                 st.session_state.current_index = 0
                 st.success("Base dataset loaded!")
-                
-    elif data_source == "My Custom HF Dataset":
-        target_load_repo = st.text_input("Dataset ID (e.g., username/my-distractors)")
-        if st.button("Load Custom Dataset"):
-            if target_load_repo:
-                try:
-                    with st.spinner(f"Loading {target_load_repo}..."):
-                        # Uses the silent token if the dataset is private
-                        ds = load_dataset(target_load_repo, split='train', token=hf_token if hf_token else None)
-                        st.session_state.df = ds.to_pandas()
-                        st.session_state.current_index = 0
-                        st.success("Custom dataset loaded!")
-                except Exception as e:
-                    st.error(f"Failed to load: {e}")
-            else:
-                st.warning("Please enter a Dataset ID.")
                 
     elif data_source == "CSV Upload":
         uploaded_file = st.file_uploader("Upload an existing annotation CSV", type="csv")
@@ -95,29 +108,34 @@ with st.sidebar:
     if st.session_state.df is not None:
         st.header("💾 Save & Export")
         
-        # 1. Save to Hugging Face
-        st.subheader("Cloud Save")
-        target_save_repo = st.text_input("Target HF Repo ID", placeholder="username/my-distractors")
+        st.subheader("Cloud Save (To Space)")
+        st.markdown(f"**Repo:** `{TARGET_REPO}`")
+        save_filename = st.text_input("Save as filename", value="annotated_distractors.csv")
         
-        if st.button("Push to Hugging Face", type="primary"):
+        if st.button("Push CSV to Space", type="primary"):
             if not hf_token:
-                st.error("Missing Hugging Face Token! Please configure HF_TOKEN in your Space Secrets settings.")
-            elif not target_save_repo:
-                st.error("Please specify a Target HF Repo ID.")
+                st.error("Missing Hugging Face Token in Space Secrets.")
+            elif not save_filename:
+                st.error("Please specify a filename.")
             else:
-                with st.spinner("Pushing to Hub..."):
+                with st.spinner(f"Uploading {save_filename}..."):
                     try:
-                        # Convert back to HF Dataset
-                        ds_to_push = Dataset.from_pandas(st.session_state.df)
-                        # Push to the hub (creates repo if it doesn't exist)
-                        ds_to_push.push_to_hub(target_save_repo, token=hf_token, private=True)
-                        st.success(f"Successfully pushed to {target_save_repo}!")
+                        # Convert DF to CSV bytes in memory
+                        csv_bytes = st.session_state.df.to_csv(index=False).encode('utf-8')
+                        fileobj = io.BytesIO(csv_bytes)
+                        
+                        api = HfApi(token=hf_token)
+                        api.upload_file(
+                            path_or_fileobj=fileobj,
+                            path_in_repo=save_filename,
+                            repo_id=TARGET_REPO,
+                            repo_type="space"
+                        )
+                        st.success(f"Successfully saved {save_filename} to Space!")
                     except Exception as e:
-                        st.error(f"Error pushing to Hub: {e}")
+                        st.error(f"Error uploading file: {e}")
         
         st.markdown("<br>", unsafe_allow_html=True)
-        
-        # 2. Local CSV Export
         st.subheader("Local Save")
         csv_data = st.session_state.df.to_csv(index=False).encode('utf-8')
         st.download_button(
@@ -130,8 +148,50 @@ with st.sidebar:
 # --- 4. Main Application ---
 st.title("Dialogue Distractor Annotation")
 
+# --- Create New Record Section ---
+with st.expander("➕ Create Entirely New Record", expanded=(st.session_state.df is None)):
+    st.write("Add a custom baseline conversation to the dataset.")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        new_domain = st.text_input("Domain", placeholder="e.g., real estate")
+        new_scenario = st.text_input("Scenario", placeholder="e.g., downsizing to a smaller home")
+    with col_b:
+        new_sys_inst = st.text_area("System Instruction", placeholder="When discussing options...")
+        
+    new_conv_str = st.text_area(
+        "Base Conversation (JSON list format)", 
+        value='[\n  {"role": "user", "content": ""},\n  {"role": "bot", "content": ""}\n]',
+        height=150
+    )
+    
+    if st.button("Add Record to Dataset"):
+        try:
+            new_conv = json.loads(new_conv_str)
+            new_row = {
+                "domain": new_domain,
+                "scenario": new_scenario,
+                "system_instruction": new_sys_inst,
+                "conversation": new_conv,
+                "distractors": [],
+                "conversation_with_distractors": []
+            }
+            
+            new_df = pd.DataFrame([new_row])
+            if st.session_state.df is None:
+                st.session_state.df = new_df
+            else:
+                st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
+                
+            st.session_state.current_index = len(st.session_state.df) - 1
+            st.success("New record created and selected!")
+            st.rerun()
+        except json.JSONDecodeError:
+            st.error("Invalid JSON format in the conversation box. Please ensure it is a valid list of dictionaries.")
+
+st.divider()
+
 if st.session_state.df is None:
-    st.info("👈 Please select and load a data source from the sidebar to begin.")
+    st.info("👈 Please load a data source from the sidebar or create a new record above to begin annotating.")
     st.stop()
 
 # Navigation Controls
@@ -165,7 +225,6 @@ with col_left:
         st.info(f"**System Instruction:**\n{record.get('system_instruction', 'N/A')}")
 
     st.header("Base Conversation")
-    # Clean the conversation array so chat bubbles render properly
     conversation = convert_to_list(record.get('conversation', []))
     
     if conversation:
@@ -180,10 +239,7 @@ with col_left:
 with col_right:
     st.header("Annotation Panel")
     
-    # 1. Edit Existing Distractors
     st.subheader("Edit Existing Distractors")
-    
-    # Clean the distractors array
     existing_distractors = convert_to_list(record.get('distractors', []))
     
     if len(existing_distractors) > 0:
@@ -197,14 +253,13 @@ with col_right:
         try:
             updated_data = json.loads(edited_distractors_str)
             st.session_state.df.at[idx, 'distractors'] = updated_data
-            st.success("Annotations updated! (Don't forget to Push to Hub to save permanently)")
+            st.success("Annotations updated! (Don't forget to push to Space to save permanently)")
             st.rerun() 
         except json.JSONDecodeError:
             st.error("Invalid JSON format. Please check your syntax.")
 
     st.divider()
 
-    # 2. Add New Distractor
     st.subheader("Add New Distractor Turn")
     distractor_strategy = st.selectbox(
         "Distractor Strategy",
@@ -224,7 +279,7 @@ with col_right:
             current_list.append(new_entry)
             
             st.session_state.df.at[idx, 'distractors'] = current_list
-            st.success("New distractor added! (Don't forget to Push to Hub to save permanently)")
+            st.success("New distractor added! (Don't forget to push to Space to save permanently)")
             st.rerun() 
         else:
             st.error("Please enter distractor text.")
