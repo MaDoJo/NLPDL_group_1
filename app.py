@@ -11,7 +11,7 @@ st.set_page_config(page_title="Distractor Annotation Tool", layout="wide")
 
 # --- 2. Helper Functions ---
 def safe_parse(val):
-    """Safely parse stringified lists/dicts from CSV files."""
+    """Safely parse stringified lists/dicts from downloaded Space CSVs."""
     if isinstance(val, str):
         try:
             return ast.literal_eval(val)
@@ -54,7 +54,7 @@ with st.sidebar:
         pass 
 
     st.header("📥 Load Data")
-    data_source = st.radio("Select Data Source:", ("Space Storage", "Base NVIDIA Dataset", "CSV Upload"))
+    data_source = st.radio("Select Data Source:", ("Space Storage", "Base NVIDIA Dataset"))
     
     if data_source == "Space Storage":
         st.markdown(f"**Repo:** `{TARGET_REPO}`")
@@ -89,26 +89,13 @@ with st.sidebar:
                 st.session_state.df = ds.to_pandas()
                 st.session_state.current_index = 0
                 st.success("Base dataset loaded!")
-                
-    elif data_source == "CSV Upload":
-        uploaded_file = st.file_uploader("Upload an existing annotation CSV", type="csv")
-        if uploaded_file is not None:
-            if st.button("Load CSV"):
-                df = pd.read_csv(uploaded_file)
-                for col in ['conversation', 'distractors', 'conversation_with_distractors']:
-                    if col in df.columns:
-                        df[col] = df[col].apply(safe_parse)
-                st.session_state.df = df
-                st.session_state.current_index = 0
-                st.success("CSV loaded!")
 
     st.divider()
     
     # --- Export / Save Functionality ---
     if st.session_state.df is not None:
-        st.header("💾 Save & Export")
+        st.header("💾 Save to Space")
         
-        st.subheader("Cloud Save (To Space)")
         st.markdown(f"**Repo:** `{TARGET_REPO}`")
         save_filename = st.text_input("Save as filename", value="annotated_distractors.csv")
         
@@ -134,16 +121,6 @@ with st.sidebar:
                         st.success(f"Successfully saved {save_filename} to Space!")
                     except Exception as e:
                         st.error(f"Error uploading file: {e}")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.subheader("Local Save")
-        csv_data = st.session_state.df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Local Backup (CSV)",
-            data=csv_data,
-            file_name="annotated_distractors_backup.csv",
-            mime="text/csv"
-        )
 
 # --- 4. Main Application ---
 st.title("Dialogue Distractor Annotation")
