@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import ast
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="Distractor Annotation Tool", layout="wide")
@@ -41,24 +41,46 @@ init_session_state()
 
 # --- 3. Sidebar: Data Loading & Export ---
 with st.sidebar:
-    st.header("Data Management")
+    st.header("⚙️ Configuration")
     
-    data_source = st.radio("Load data from:", ("Hugging Face", "CSV Upload"))
+    # Check for secrets first, fallback to user input
+    default_token = st.secrets.get("HF_TOKEN", "") if hasattr(st.secrets, "get") else ""
+    hf_token = st.text_input("Hugging Face Write Token", type="password", value=default_token, help="Required to save data back to Hugging Face.")
     
-    if data_source == "Hugging Face":
-        if st.button("Load HF Dataset"):
+    st.divider()
+    st.header("📥 Load Data")
+    
+    data_source = st.radio("Select Data Source:", ("Base NVIDIA Dataset", "My Custom HF Dataset", "CSV Upload"))
+    
+    if data_source == "Base NVIDIA Dataset":
+        if st.button("Load Base Dataset"):
             with st.spinner("Loading nvidia/CantTalkAboutThis-Topic-Control-Dataset..."):
                 ds = load_dataset("nvidia/CantTalkAboutThis-Topic-Control-Dataset", split='train')
                 st.session_state.df = ds.to_pandas()
                 st.session_state.current_index = 0
-                st.success("Dataset loaded!")
+                st.success("Base dataset loaded!")
+                
+    elif data_source == "My Custom HF Dataset":
+        target_load_repo = st.text_input("Dataset ID (e.g., username/my-distractors)")
+        if st.button("Load Custom Dataset"):
+            if target_load_repo:
+                try:
+                    with st.spinner(f"Loading {target_load_repo}..."):
+                        # If the dataset is private, it needs the token to load
+                        ds = load_dataset(target_load_repo, split='train', token=hf_token if hf_token else None)
+                        st.session_state.df = ds.to_pandas()
+                        st.session_state.current_index = 0
+                        st.success("Custom dataset loaded!")
+                except Exception as e:
+                    st.error(f"Failed to load: {e}")
+            else:
+                st.warning("Please enter a Dataset ID.")
                 
     elif data_source == "CSV Upload":
         uploaded_file = st.file_uploader("Upload an existing annotation CSV", type="csv")
         if uploaded_file is not None:
             if st.button("Load CSV"):
                 df = pd.read_csv(uploaded_file)
-                # Parse stringified lists/dicts back into Python objects
                 for col in ['conversation', 'distractors', 'conversation_with_distractors']:
                     if col in df.columns:
                         df[col] = df[col].apply(safe_parse)
@@ -68,23 +90,47 @@ with st.sidebar:
 
     st.divider()
     
-    # Export Functionality
+    # --- Export / Save Functionality ---
     if st.session_state.df is not None:
-        st.header("Export")
+        st.header("💾 Save & Export")
+        
+        # 1. Save to Hugging Face
+        st.subheader("Cloud Save")
+        target_save_repo = st.text_input("Target HF Repo ID", placeholder="username/my-distractors")
+        
+        if st.button("Push to Hugging Face", type="primary"):
+            if not hf_token:
+                st.error("Missing Hugging Face Token! Please add it at the top of the sidebar.")
+            elif not target_save_repo:
+                st.error("Please specify a Target HF Repo ID.")
+            else:
+                with st.spinner("Pushing to Hub..."):
+                    try:
+                        # Convert back to HF Dataset
+                        ds_to_push = Dataset.from_pandas(st.session_state.df)
+                        # Push to the hub (creates repo if it doesn't exist)
+                        ds_to_push.push_to_hub(target_save_repo, token=hf_token, private=True)
+                        st.success(f"Successfully pushed to {target_save_repo}!")
+                    except Exception as e:
+                        st.error(f"Error pushing to Hub: {e}")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # 2. Local CSV Export
+        st.subheader("Local Save")
         csv_data = st.session_state.df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="Download Annotations (CSV)",
+            label="Download Local Backup (CSV)",
             data=csv_data,
-            file_name="annotated_distractors.csv",
-            mime="text/csv",
-            type="primary"
+            file_name="annotated_distractors_backup.csv",
+            mime="text/csv"
         )
 
 # --- 4. Main Application ---
 st.title("Dialogue Distractor Annotation")
 
 if st.session_state.df is None:
-    st.info("👈 Please load a dataset from the sidebar to begin.")
+    st.info("👈 Please select and load a data source from the sidebar to begin.")
     st.stop()
 
 # Navigation Controls
@@ -151,7 +197,7 @@ with col_right:
         try:
             updated_data = json.loads(edited_distractors_str)
             st.session_state.df.at[idx, 'distractors'] = updated_data
-            st.success("Annotations updated!")
+            st.success("Annotations updated! (Don't forget to Push to Hub to save permanently)")
             st.rerun() # Refresh to show applied changes
         except json.JSONDecodeError:
             st.error("Invalid JSON format. Please check your syntax.")
@@ -179,7 +225,7 @@ with col_right:
             current_list.append(new_entry)
             
             st.session_state.df.at[idx, 'distractors'] = current_list
-            st.success("New distractor added!")
+            st.success("New distractor added! (Don't forget to Push to Hub to save permanently)")
             st.rerun() # Refresh to show the new data in the editor above
         else:
             st.error("Please enter distractor text.")
