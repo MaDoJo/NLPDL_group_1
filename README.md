@@ -1,3 +1,14 @@
+
+---
+title: Distractor Annotation Tool
+emoji: 💬
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+app_file: app.py
+pinned: false
+---
+
 # NLPDL_group_1: Keeping LLMs on Track
 
 This repository contains the code and annotation interface for the **Keeping LLMs on Track** project. 
