@@ -1,35 +1,20 @@
 import streamlit as st
 import pandas as pd
 import json
-import ast
-import io
-from datasets import load_dataset
+import os
+from datasets import load_dataset, Dataset
 from huggingface_hub import HfApi, hf_hub_download
 
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="Distractor Annotation Tool", layout="wide")
 
 # --- 2. Helper Functions ---
-def safe_parse(val):
-    """Safely parse stringified lists/dicts from downloaded Space CSVs."""
-    if isinstance(val, str):
-        try:
-            return ast.literal_eval(val)
-        except (ValueError, SyntaxError):
-            return val
-    return val
-
 def convert_to_list(data):
-    """Safely convert Pandas/Numpy types to standard Python lists."""
+    """Safely convert Pandas/Numpy array types back to standard Python lists for rendering."""
     if hasattr(data, 'tolist'): 
         return data.tolist()
     if isinstance(data, float) and pd.isna(data): 
         return []
-    if isinstance(data, str): 
-        try:
-            return ast.literal_eval(data)
-        except:
-            return []
     return data if isinstance(data, list) else []
 
 def init_session_state():
@@ -54,11 +39,11 @@ with st.sidebar:
         pass 
 
     st.header("📥 Load Data")
-    data_source = st.radio("Select Data Source:", ("Space Storage", "Base NVIDIA Dataset"))
+    data_source = st.radio("Select Data Source:", ("Space Storage (HF Dataset)", "Base NVIDIA Dataset"))
     
-    if data_source == "Space Storage":
+    if data_source == "Space Storage (HF Dataset)":
         st.markdown(f"**Repo:** `{TARGET_REPO}`")
-        load_filename = st.text_input("Filename to load", value="annotated_distractors.csv")
+        load_filename = st.text_input("Filename to load", value="annotated_distractors.parquet")
         
         if st.button("Load from Space"):
             if load_filename:
@@ -70,11 +55,9 @@ with st.sidebar:
                             repo_type="space",
                             token=hf_token if hf_token else None
                         )
-                        df = pd.read_csv(file_path)
-                        for col in ['conversation', 'distractors', 'conversation_with_distractors']:
-                            if col in df.columns:
-                                df[col] = df[col].apply(safe_parse)
-                        st.session_state.df = df
+                        # Native HF Dataset loading preserves all nested structures perfectly
+                        ds = Dataset.from_parquet(file_path)
+                        st.session_state.df = ds.to_pandas()
                         st.session_state.current_index = 0
                         st.success(f"Loaded {load_filename} successfully!")
                 except Exception as e:
@@ -97,9 +80,9 @@ with st.sidebar:
         st.header("💾 Save to Space")
         
         st.markdown(f"**Repo:** `{TARGET_REPO}`")
-        save_filename = st.text_input("Save as filename", value="annotated_distractors.csv")
+        save_filename = st.text_input("Save as filename", value="annotated_distractors.parquet")
         
-        if st.button("Push CSV to Space", type="primary"):
+        if st.button("Push Dataset to Space", type="primary"):
             if not hf_token:
                 st.error("Missing Hugging Face Token in Space Secrets.")
             elif not save_filename:
@@ -107,17 +90,25 @@ with st.sidebar:
             else:
                 with st.spinner(f"Uploading {save_filename}..."):
                     try:
-                        # Convert DF to CSV bytes in memory
-                        csv_bytes = st.session_state.df.to_csv(index=False).encode('utf-8')
-                        fileobj = io.BytesIO(csv_bytes)
+                        # Convert DataFrame natively back to a Hugging Face Dataset
+                        ds_to_push = Dataset.from_pandas(st.session_state.df)
+                        
+                        # Save temporarily to disk as Parquet
+                        temp_path = "temp_export.parquet"
+                        ds_to_push.to_parquet(temp_path)
                         
                         api = HfApi(token=hf_token)
                         api.upload_file(
-                            path_or_fileobj=fileobj,
+                            path_or_fileobj=temp_path,
                             path_in_repo=save_filename,
                             repo_id=TARGET_REPO,
                             repo_type="space"
                         )
+                        
+                        # Cleanup temp file
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                            
                         st.success(f"Successfully saved {save_filename} to Space!")
                     except Exception as e:
                         st.error(f"Error uploading file: {e}")
